@@ -14,13 +14,29 @@
       border:1px solid #222;border-radius:0 0 10px 10px;
       background:#fff;box-sizing:border-box;
     }
-    .white.active{filter:brightness(0.92)}
     .black{
       position:absolute;top:0;z-index:2;
       width:36px;height:140px;
       background:#111;border:1px solid #000;border-radius:0 0 8px 8px;
     }
-    .black.active{filter:brightness(1.25)}
+.white.active{
+  background: red;   /* rouge léger sur la touche */
+}
+
+.black.active{
+  background: red;                /* noir légèrement rouge */
+}
+
+.btn{
+  font-size: 18px;
+  padding: 10px 16px;
+  border-radius: 10px;
+}
+
+  #randNote{
+    font-size: 22px;
+  }
+
   </style>
 </head>
 <body>
@@ -30,6 +46,15 @@
       <div id="blackKeys"></div>
     </div>
   </div>
+
+<div class="wrap" style="display:flex; flex-direction:column; gap:12px; margin-bottom:12px;">
+  <button id="randPlayBtn" class="btn" type="button">note aléatoire</button>
+
+  <div style="display:flex; align-items:center; gap:12px;">
+    <button id="randBtn" class="btn" type="button">nom aléatoire</button>
+    <span id="randNote" style="font-weight:700;">—</span>
+  </div>
+</div>
 
 <script>
 (() => {
@@ -55,6 +80,9 @@
     "k": 19
   };
 
+
+
+
   const piano = document.getElementById("piano");
   const whiteWrap = document.getElementById("whiteKeys");
   const blackWrap = document.getElementById("blackKeys");
@@ -71,9 +99,26 @@
     });
   }
 
+  // --- Random note button (1/12 chaque note) ---
+  const randBtn = document.getElementById("randBtn");
+  const randOut = document.getElementById("randNote");
+  const randPlayBtn = document.getElementById("randPlayBtn");
+
+
+  // 12 noms (chromatiques) : tu peux changer l'affichage si tu veux
+  const noteNames12 = ["Do","Do#","Ré","Ré#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si"];
+
+function drawRandomName(){
+  const name = noteNames12[Math.floor(Math.random() * 12)];
+  randOut.textContent = name;
+}
+
+randBtn?.addEventListener("click", drawRandomName);
+
   // ---- Sustain note on/off (avec gestion multi-sources) ----
   const activeVoices = new Map(); // noteIndex -> {osc, gain}
   const holdCount = new Map();    // noteIndex -> number
+  const showVisualCount = new Map(); // noteIndex -> number (sources qui veulent l'animation)
   const pointerHeld = new Set();  // noteIndex held by mouse/touch
 
   const ATTACK = 0.008;
@@ -82,6 +127,11 @@
 
   const whiteElsByIndex = new Map();
   const blackElsByIndex = new Map();
+
+  let randomHeldIdx = null;
+
+
+
 
   function setActiveClass(i, on){
     const el = blackElsByIndex.get(i) || whiteElsByIndex.get(i);
@@ -110,7 +160,6 @@
     osc.start(now);
 
     activeVoices.set(noteIndex, { osc, gain });
-    setActiveClass(noteIndex, true);
   }
 
   function stopVoice(noteIndex){
@@ -126,26 +175,119 @@
     v.osc.stop(now + RELEASE + 0.02);
 
     activeVoices.delete(noteIndex);
-    setActiveClass(noteIndex, false);
   }
 
-  function noteOn(noteIndex, source){
-    const c = (holdCount.get(noteIndex) || 0) + 1;
-    holdCount.set(noteIndex, c);
-    if (source === "ptr") pointerHeld.add(noteIndex);
-    if (c === 1) startVoice(noteIndex);
+function noteOn(noteIndex, source){
+  const c = (holdCount.get(noteIndex) || 0) + 1;
+  holdCount.set(noteIndex, c);
+
+  if (source === "ptr") pointerHeld.add(noteIndex);
+
+  // seules ces sources déclenchent l'animation
+  if (source !== "rand") {
+    const v = (showVisualCount.get(noteIndex) || 0) + 1;
+    showVisualCount.set(noteIndex, v);
+    setActiveClass(noteIndex, true);
   }
 
-  function noteOff(noteIndex, source){
-    if (source === "ptr") pointerHeld.delete(noteIndex);
-    const c = (holdCount.get(noteIndex) || 0) - 1;
-    if (c <= 0){
-      holdCount.delete(noteIndex);
-      stopVoice(noteIndex);
+  if (c === 1) startVoice(noteIndex);
+}
+
+function noteOff(noteIndex, source){
+  if (source === "ptr") pointerHeld.delete(noteIndex);
+
+  if (source !== "rand") {
+    const v = (showVisualCount.get(noteIndex) || 0) - 1;
+    if (v <= 0) {
+      showVisualCount.delete(noteIndex);
+      setActiveClass(noteIndex, false);
     } else {
-      holdCount.set(noteIndex, c);
+      showVisualCount.set(noteIndex, v);
     }
   }
+
+  const c = (holdCount.get(noteIndex) || 0) - 1;
+  if (c <= 0){
+    holdCount.delete(noteIndex);
+    stopVoice(noteIndex);
+  } else {
+    holdCount.set(noteIndex, c);
+  }
+}
+
+  function startRandomHeldNote(){
+  if (randomHeldIdx !== null) return;
+
+  const playableIdx = Object.values(keyMap);
+  const idx = playableIdx[Math.floor(Math.random() * playableIdx.length)];
+
+  randomHeldIdx = idx;
+  noteOn(idx, "rand");
+}
+
+  // --- Touche "r" = note aléatoire maintenue tant que la touche est enfoncée ---
+document.addEventListener("keydown", (e) => {
+  if (e.key.toLowerCase() !== "r") return;
+  if (e.repeat) return;
+  e.preventDefault();
+
+  startRandomHeldNote();
+});
+
+  document.addEventListener("keyup", (e) => {
+    if (e.key.toLowerCase() !== "r") return;
+    e.preventDefault();
+
+    if (randomHeldIdx !== null) {
+      noteOff(randomHeldIdx, "rand");
+      randomHeldIdx = null;
+    }
+  });
+
+  randPlayBtn?.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  startRandomHeldNote();
+});
+
+randPlayBtn?.addEventListener("mouseup", (e) => {
+  e.preventDefault();
+  if (randomHeldIdx !== null) {
+    noteOff(randomHeldIdx, "rand");
+    randomHeldIdx = null;
+  }
+});
+
+// optionnel (si tu sors la souris du bouton en restant cliqué)
+randPlayBtn?.addEventListener("mouseleave", () => {
+  if (randomHeldIdx !== null) {
+    noteOff(randomHeldIdx, "rand");
+    randomHeldIdx = null;
+  }
+});
+
+// --- tactile (mobile/tablette) ---
+randPlayBtn?.addEventListener("touchstart", (e) => {
+  e.preventDefault();
+  startRandomHeldNote();
+}, { passive: false });
+
+randPlayBtn?.addEventListener("touchend", (e) => {
+  e.preventDefault();
+  if (randomHeldIdx !== null) {
+    noteOff(randomHeldIdx, "rand");
+    randomHeldIdx = null;
+  }
+}, { passive: false });
+
+randPlayBtn?.addEventListener("touchcancel", (e) => {
+  e.preventDefault();
+  if (randomHeldIdx !== null) {
+    noteOff(randomHeldIdx, "rand");
+    randomHeldIdx = null;
+  }
+}, { passive: false });
+
+
 
   function releaseAllPointer(){
     // ne relâche QUE ce qui vient de la souris/tactile
@@ -203,6 +345,7 @@
   // ---- Keyboard holds (note on/off) ----
   document.addEventListener("keydown", (e) => {
     const k = e.key.toLowerCase();
+    if (k === "r") return;
     if (!(k in keyMap)) return;
     if (e.repeat) return;
     noteOn(keyMap[k], "key");
@@ -210,12 +353,25 @@
 
   document.addEventListener("keyup", (e) => {
     const k = e.key.toLowerCase();
+    if (k === "r") return;
     if (!(k in keyMap)) return;
     noteOff(keyMap[k], "key");
   });
 
+  // Espace => équivalent clic sur le bouton
+  document.addEventListener("keydown", (e) => {
+    if (e.code === "Space" && !e.repeat) {
+      e.preventDefault();      // évite le scroll
+      randBtn?.click();
+    }
+  });
+
   // If window loses focus, stop everything
   window.addEventListener("blur", () => {
+    if (randomHeldIdx !== null) {
+  noteOff(randomHeldIdx, "rand");
+  randomHeldIdx = null;
+}
     releaseAllPointer();
     for (const idx of [...holdCount.keys()]) {
       // force stop remaining (keyboard) holds
