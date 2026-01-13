@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Piano</title>
+  <style>
+    body{margin:0;padding:16px;background:#fff}
+    .wrap{max-width:100%;overflow:auto;padding-bottom:8px}
+    .piano{position:relative;display:inline-block;user-select:none;-webkit-user-select:none}
+    .white-keys{display:flex}
+    .white{
+      width:56px;height:220px;
+      border:1px solid #222;border-radius:0 0 10px 10px;
+      background:#fff;box-sizing:border-box;
+    }
+    .white.active{filter:brightness(0.92)}
+    .black{
+      position:absolute;top:0;z-index:2;
+      width:36px;height:140px;
+      background:#111;border:1px solid #000;border-radius:0 0 8px 8px;
+    }
+    .black.active{filter:brightness(1.25)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="piano" id="piano">
+      <div class="white-keys" id="whiteKeys"></div>
+      <div id="blackKeys"></div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AudioCtx();
+
+  function midiToFreq(m){ return 440 * Math.pow(2, (m - 69) / 12); }
+
+  // Plage: F2 -> F4 (inclus)
+  // F2=41, F4=65 => 25 notes
+  const START_MIDI = 41;
+  const END_MIDI   = 65;
+  const TOTAL_NOTES = END_MIDI - START_MIDI + 1;
+
+  // Notes noires dans l’octave (mod 12): C#, D#, F#, G#, A#
+  const BLACK_OFFSETS = new Set([1,3,6,8,10]);
+
+  // Mapping clavier conservé (C3..B3 + C4)
+  // C3 = 48 => index = 48 - START_MIDI = 7
+  const keyMap = {
+    "q":  7,  "z":  8,  "s":  9,  "e": 10,  "d": 11,  "f": 12,
+    "t": 13,  "g": 14,  "y": 15,  "h": 16,  "u": 17,  "j": 18,
+    "k": 19
+  };
+
+  const piano = document.getElementById("piano");
+  const whiteWrap = document.getElementById("whiteKeys");
+  const blackWrap = document.getElementById("blackKeys");
+
+  // Build notes
+  const notes = [];
+  for (let i=0;i<TOTAL_NOTES;i++){
+    const midi = START_MIDI + i;
+    notes.push({
+      i,
+      midi,
+      freq: midiToFreq(midi),
+      isBlack: BLACK_OFFSETS.has(midi % 12)
+    });
+  }
+
+  // ---- Sustain note on/off (avec gestion multi-sources) ----
+  const activeVoices = new Map(); // noteIndex -> {osc, gain}
+  const holdCount = new Map();    // noteIndex -> number
+  const pointerHeld = new Set();  // noteIndex held by mouse/touch
+
+  const ATTACK = 0.008;
+  const RELEASE = 0.08;
+  const LEVEL = 0.25;
+
+  const whiteElsByIndex = new Map();
+  const blackElsByIndex = new Map();
+
+  function setActiveClass(i, on){
+    const el = blackElsByIndex.get(i) || whiteElsByIndex.get(i);
+    if (!el) return;
+    el.classList.toggle("active", on);
+  }
+
+  function startVoice(noteIndex){
+    if (activeVoices.has(noteIndex)) return;
+    if (ctx.state === "suspended") ctx.resume();
+    const n = notes[noteIndex];
+    if (!n) return;
+
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = n.freq;
+
+    osc.connect(gain).connect(ctx.destination);
+
+    const now = ctx.currentTime;
+    gain.gain.cancelScheduledValues(now);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(LEVEL, now + ATTACK);
+
+    osc.start(now);
+
+    activeVoices.set(noteIndex, { osc, gain });
+    setActiveClass(noteIndex, true);
+  }
+
+  function stopVoice(noteIndex){
+    const v = activeVoices.get(noteIndex);
+    if (!v) return;
+
+    const now = ctx.currentTime;
+    v.gain.gain.cancelScheduledValues(now);
+    const current = Math.max(v.gain.gain.value, 0.0001);
+    v.gain.gain.setValueAtTime(current, now);
+    v.gain.gain.exponentialRampToValueAtTime(0.0001, now + RELEASE);
+
+    v.osc.stop(now + RELEASE + 0.02);
+
+    activeVoices.delete(noteIndex);
+    setActiveClass(noteIndex, false);
+  }
+
+  function noteOn(noteIndex, source){
+    const c = (holdCount.get(noteIndex) || 0) + 1;
+    holdCount.set(noteIndex, c);
+    if (source === "ptr") pointerHeld.add(noteIndex);
+    if (c === 1) startVoice(noteIndex);
+  }
+
+  function noteOff(noteIndex, source){
+    if (source === "ptr") pointerHeld.delete(noteIndex);
+    const c = (holdCount.get(noteIndex) || 0) - 1;
+    if (c <= 0){
+      holdCount.delete(noteIndex);
+      stopVoice(noteIndex);
+    } else {
+      holdCount.set(noteIndex, c);
+    }
+  }
+
+  function releaseAllPointer(){
+    // ne relâche QUE ce qui vient de la souris/tactile
+    for (const idx of [...pointerHeld]) noteOff(idx, "ptr");
+    pointerHeld.clear();
+  }
+
+  // ---- Build visual keys ----
+  const whiteNotes = notes.filter(n => !n.isBlack);
+
+  whiteNotes.forEach(n => {
+    const el = document.createElement("div");
+    el.className = "white";
+    el.dataset.noteIndex = n.i;
+
+    el.addEventListener("mousedown", (e) => { e.preventDefault(); noteOn(n.i, "ptr"); });
+    el.addEventListener("touchstart", (e) => { e.preventDefault(); noteOn(n.i, "ptr"); }, {passive:false});
+
+    whiteWrap.appendChild(el);
+    whiteElsByIndex.set(n.i, el);
+  });
+
+  const WHITE_W = 56;
+  const BLACK_W = 36;
+  piano.style.width = (whiteNotes.length * WHITE_W) + "px";
+
+  // Map midi -> white position (index in whiteNotes)
+  const whitePosByMidi = new Map();
+  whiteNotes.forEach((w, pos) => whitePosByMidi.set(w.midi, pos));
+
+  // Important fix: une noire (dièse) est toujours "au-dessus" de la blanche midi-1
+  notes.filter(n => n.isBlack).forEach(n => {
+    const el = document.createElement("div");
+    el.className = "black";
+    el.dataset.noteIndex = n.i;
+
+    const leftWhiteMidi = n.midi - 1; // C# au-dessus de C, etc.
+    const leftPos = whitePosByMidi.get(leftWhiteMidi);
+
+    // sécurité (au cas où)
+    const base = (leftPos == null ? 0 : leftPos) * WHITE_W;
+    el.style.left = (base + WHITE_W - (BLACK_W/2)) + "px";
+
+    el.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); noteOn(n.i, "ptr"); });
+    el.addEventListener("touchstart", (e) => { e.preventDefault(); e.stopPropagation(); noteOn(n.i, "ptr"); }, {passive:false});
+
+    blackWrap.appendChild(el);
+    blackElsByIndex.set(n.i, el);
+  });
+
+  // release pointer holds
+  document.addEventListener("mouseup", releaseAllPointer);
+  document.addEventListener("touchend", releaseAllPointer);
+
+  // ---- Keyboard holds (note on/off) ----
+  document.addEventListener("keydown", (e) => {
+    const k = e.key.toLowerCase();
+    if (!(k in keyMap)) return;
+    if (e.repeat) return;
+    noteOn(keyMap[k], "key");
+  });
+
+  document.addEventListener("keyup", (e) => {
+    const k = e.key.toLowerCase();
+    if (!(k in keyMap)) return;
+    noteOff(keyMap[k], "key");
+  });
+
+  // If window loses focus, stop everything
+  window.addEventListener("blur", () => {
+    releaseAllPointer();
+    for (const idx of [...holdCount.keys()]) {
+      // force stop remaining (keyboard) holds
+      holdCount.delete(idx);
+      stopVoice(idx);
+    }
+  });
+})();
+</script>
+</body>
+</html>
