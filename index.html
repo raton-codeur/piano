@@ -5,381 +5,538 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Piano</title>
   <style>
-    body{margin:0;padding:16px;background:#fff}
-    .wrap{max-width:100%;overflow:auto;padding-bottom:8px}
-    .piano{position:relative;display:inline-block;user-select:none;-webkit-user-select:none}
-    .white-keys{display:flex}
-    .white{
-      width:56px;height:220px;
-      border:1px solid #222;border-radius:0 0 10px 10px;
-      background:#fff;box-sizing:border-box;
+    body {
+      margin: 0;
+      padding: 16px;
+      background: #fff;
     }
-    .black{
-      position:absolute;top:0;z-index:2;
-      width:36px;height:140px;
-      background:#111;border:1px solid #000;border-radius:0 0 8px 8px;
+
+    .wrap {
+      max-width: 100%;
+      padding-bottom: 8px;
     }
-.white.active{
-  background: red;   /* rouge léger sur la touche */
-}
 
-.black.active{
-  background: red;                /* noir légèrement rouge */
-}
+    .piano-wrap {
+      max-width: 100%;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding-bottom: 8px;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-x;
+    }
 
-.btn{
-  font-size: 18px;
-  padding: 10px 16px;
-  border-radius: 10px;
-}
+    .piano {
+      position: relative;
+      display: inline-block;
+      user-select: none;
+      -webkit-user-select: none;
+      width: max-content; /* évite la compression */
+    }
 
-  #randNote{
-    font-size: 22px;
-  }
+    .white-keys {
+      display: flex;
+    }
 
+    .white {
+      width: 56px;
+      height: 220px;
+      border: 1px solid #222;
+      border-radius: 0 0 10px 10px;
+      background: #fff;
+      box-sizing: border-box;
+    }
+
+    .black {
+      position: absolute;
+      top: 0;
+      z-index: 2;
+      width: 36px;
+      height: 140px;
+      background: #111;
+      border: 1px solid #000;
+      border-radius: 0 0 8px 8px;
+    }
+
+    .white.active {
+      background: red;
+    }
+
+    .black.active {
+      background: red;
+    }
+
+    .btn {
+      font-size: 18px;
+      padding: 10px 16px;
+      border-radius: 10px;
+    }
+
+    #randNote {
+      font-size: 22px;
+      font-weight: 700;
+    }
   </style>
 </head>
+
 <body>
-  <div class="wrap">
+  <div class="piano-wrap">
     <div class="piano" id="piano">
       <div class="white-keys" id="whiteKeys"></div>
       <div id="blackKeys"></div>
     </div>
   </div>
 
-<div class="wrap" style="display:flex; flex-direction:column; gap:12px; margin-bottom:12px;">
-  <button id="randPlayBtn" class="btn" type="button">note aléatoire</button>
+  <div class="wrap" style="display:flex; flex-direction:column; gap:12px; margin-bottom:12px;">
+    <button id="randPlayBtn" class="btn" type="button">note aléatoire</button>
 
-  <div style="display:flex; align-items:center; gap:12px;">
-    <button id="randBtn" class="btn" type="button">nom aléatoire</button>
-    <span id="randNote" style="font-weight:700;">—</span>
+    <div style="display:flex; align-items:center; gap:12px;">
+      <button id="randBtn" class="btn" type="button">nom aléatoire</button>
+      <span id="randNote">—</span>
+    </div>
   </div>
-</div>
 
-<script>
-(() => {
-  const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  const ctx = new AudioCtx();
-
-  function midiToFreq(m){ return 440 * Math.pow(2, (m - 69) / 12); }
-
-  // Plage: F2 -> F4 (inclus)
-  // F2=41, F4=65 => 25 notes
-  const START_MIDI = 41;
-  const END_MIDI   = 65;
-  const TOTAL_NOTES = END_MIDI - START_MIDI + 1;
-
-  // Notes noires dans l’octave (mod 12): C#, D#, F#, G#, A#
-  const BLACK_OFFSETS = new Set([1,3,6,8,10]);
-
-  // Mapping clavier conservé (C3..B3 + C4)
-  // C3 = 48 => index = 48 - START_MIDI = 7
-  const keyMap = {
-    "q":  7,  "z":  8,  "s":  9,  "e": 10,  "d": 11,  "f": 12,
-    "t": 13,  "g": 14,  "y": 15,  "h": 16,  "u": 17,  "j": 18,
-    "k": 19
-  };
-
-
-
-
-  const piano = document.getElementById("piano");
-  const whiteWrap = document.getElementById("whiteKeys");
-  const blackWrap = document.getElementById("blackKeys");
-
-  // Build notes
-  const notes = [];
-  for (let i=0;i<TOTAL_NOTES;i++){
-    const midi = START_MIDI + i;
-    notes.push({
-      i,
-      midi,
-      freq: midiToFreq(midi),
-      isBlack: BLACK_OFFSETS.has(midi % 12)
-    });
-  }
-
-  // --- Random note button (1/12 chaque note) ---
-  const randBtn = document.getElementById("randBtn");
-  const randOut = document.getElementById("randNote");
-  const randPlayBtn = document.getElementById("randPlayBtn");
-
-
-  // 12 noms (chromatiques) : tu peux changer l'affichage si tu veux
-  const noteNames12 = ["Do","Do#","Ré","Ré#","Mi","Fa","Fa#","Sol","Sol#","La","La#","Si"];
-
-function drawRandomName(){
-  const name = noteNames12[Math.floor(Math.random() * 12)];
-  randOut.textContent = name;
-}
-
-randBtn?.addEventListener("click", drawRandomName);
-
-  // ---- Sustain note on/off (avec gestion multi-sources) ----
-  const activeVoices = new Map(); // noteIndex -> {osc, gain}
-  const holdCount = new Map();    // noteIndex -> number
-  const showVisualCount = new Map(); // noteIndex -> number (sources qui veulent l'animation)
-  const pointerHeld = new Set();  // noteIndex held by mouse/touch
-
-  const ATTACK = 0.008;
-  const RELEASE = 0.08;
-  const LEVEL = 0.25;
-
-  const whiteElsByIndex = new Map();
-  const blackElsByIndex = new Map();
-
-  let randomHeldIdx = null;
-
-
-
-
-  function setActiveClass(i, on){
-    const el = blackElsByIndex.get(i) || whiteElsByIndex.get(i);
-    if (!el) return;
-    el.classList.toggle("active", on);
-  }
-
-  function startVoice(noteIndex){
-    if (activeVoices.has(noteIndex)) return;
-    if (ctx.state === "suspended") ctx.resume();
-    const n = notes[noteIndex];
-    if (!n) return;
-
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = "sine";
-    osc.frequency.value = n.freq;
-
-    osc.connect(gain).connect(ctx.destination);
-
-    const now = ctx.currentTime;
-    gain.gain.cancelScheduledValues(now);
-    gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(LEVEL, now + ATTACK);
-
-    osc.start(now);
-
-    activeVoices.set(noteIndex, { osc, gain });
-  }
-
-  function stopVoice(noteIndex){
-    const v = activeVoices.get(noteIndex);
-    if (!v) return;
-
-    const now = ctx.currentTime;
-    v.gain.gain.cancelScheduledValues(now);
-    const current = Math.max(v.gain.gain.value, 0.0001);
-    v.gain.gain.setValueAtTime(current, now);
-    v.gain.gain.exponentialRampToValueAtTime(0.0001, now + RELEASE);
-
-    v.osc.stop(now + RELEASE + 0.02);
-
-    activeVoices.delete(noteIndex);
-  }
-
-function noteOn(noteIndex, source){
-  const c = (holdCount.get(noteIndex) || 0) + 1;
-  holdCount.set(noteIndex, c);
-
-  if (source === "ptr") pointerHeld.add(noteIndex);
-
-  // seules ces sources déclenchent l'animation
-  if (source !== "rand") {
-    const v = (showVisualCount.get(noteIndex) || 0) + 1;
-    showVisualCount.set(noteIndex, v);
-    setActiveClass(noteIndex, true);
-  }
-
-  if (c === 1) startVoice(noteIndex);
-}
-
-function noteOff(noteIndex, source){
-  if (source === "ptr") pointerHeld.delete(noteIndex);
-
-  if (source !== "rand") {
-    const v = (showVisualCount.get(noteIndex) || 0) - 1;
-    if (v <= 0) {
-      showVisualCount.delete(noteIndex);
-      setActiveClass(noteIndex, false);
-    } else {
-      showVisualCount.set(noteIndex, v);
-    }
-  }
-
-  const c = (holdCount.get(noteIndex) || 0) - 1;
-  if (c <= 0){
-    holdCount.delete(noteIndex);
-    stopVoice(noteIndex);
-  } else {
-    holdCount.set(noteIndex, c);
-  }
-}
-
-  function startRandomHeldNote(){
-  if (randomHeldIdx !== null) return;
-
-  const playableIdx = Object.values(keyMap);
-  const idx = playableIdx[Math.floor(Math.random() * playableIdx.length)];
-
-  randomHeldIdx = idx;
-  noteOn(idx, "rand");
-}
-
-  // --- Touche "r" = note aléatoire maintenue tant que la touche est enfoncée ---
-document.addEventListener("keydown", (e) => {
-  if (e.key.toLowerCase() !== "r") return;
-  if (e.repeat) return;
-  e.preventDefault();
-
-  startRandomHeldNote();
-});
-
-  document.addEventListener("keyup", (e) => {
-    if (e.key.toLowerCase() !== "r") return;
-    e.preventDefault();
-
-    if (randomHeldIdx !== null) {
-      noteOff(randomHeldIdx, "rand");
-      randomHeldIdx = null;
-    }
-  });
-
-  randPlayBtn?.addEventListener("mousedown", (e) => {
-  e.preventDefault();
-  startRandomHeldNote();
-});
-
-randPlayBtn?.addEventListener("mouseup", (e) => {
-  e.preventDefault();
-  if (randomHeldIdx !== null) {
-    noteOff(randomHeldIdx, "rand");
-    randomHeldIdx = null;
-  }
-});
-
-// optionnel (si tu sors la souris du bouton en restant cliqué)
-randPlayBtn?.addEventListener("mouseleave", () => {
-  if (randomHeldIdx !== null) {
-    noteOff(randomHeldIdx, "rand");
-    randomHeldIdx = null;
-  }
-});
-
-// --- tactile (mobile/tablette) ---
-randPlayBtn?.addEventListener("touchstart", (e) => {
-  e.preventDefault();
-  startRandomHeldNote();
-}, { passive: false });
-
-randPlayBtn?.addEventListener("touchend", (e) => {
-  e.preventDefault();
-  if (randomHeldIdx !== null) {
-    noteOff(randomHeldIdx, "rand");
-    randomHeldIdx = null;
-  }
-}, { passive: false });
-
-randPlayBtn?.addEventListener("touchcancel", (e) => {
-  e.preventDefault();
-  if (randomHeldIdx !== null) {
-    noteOff(randomHeldIdx, "rand");
-    randomHeldIdx = null;
-  }
-}, { passive: false });
-
-
-
-  function releaseAllPointer(){
-    // ne relâche QUE ce qui vient de la souris/tactile
-    for (const idx of [...pointerHeld]) noteOff(idx, "ptr");
-    pointerHeld.clear();
-  }
-
-  // ---- Build visual keys ----
-  const whiteNotes = notes.filter(n => !n.isBlack);
-
-  whiteNotes.forEach(n => {
-    const el = document.createElement("div");
-    el.className = "white";
-    el.dataset.noteIndex = n.i;
-
-    el.addEventListener("mousedown", (e) => { e.preventDefault(); noteOn(n.i, "ptr"); });
-    el.addEventListener("touchstart", (e) => { e.preventDefault(); noteOn(n.i, "ptr"); }, {passive:false});
-
-    whiteWrap.appendChild(el);
-    whiteElsByIndex.set(n.i, el);
-  });
-
-  const WHITE_W = 56;
-  const BLACK_W = 36;
-  piano.style.width = (whiteNotes.length * WHITE_W) + "px";
-
-  // Map midi -> white position (index in whiteNotes)
-  const whitePosByMidi = new Map();
-  whiteNotes.forEach((w, pos) => whitePosByMidi.set(w.midi, pos));
-
-  // Important fix: une noire (dièse) est toujours "au-dessus" de la blanche midi-1
-  notes.filter(n => n.isBlack).forEach(n => {
-    const el = document.createElement("div");
-    el.className = "black";
-    el.dataset.noteIndex = n.i;
-
-    const leftWhiteMidi = n.midi - 1; // C# au-dessus de C, etc.
-    const leftPos = whitePosByMidi.get(leftWhiteMidi);
-
-    // sécurité (au cas où)
-    const base = (leftPos == null ? 0 : leftPos) * WHITE_W;
-    el.style.left = (base + WHITE_W - (BLACK_W/2)) + "px";
-
-    el.addEventListener("mousedown", (e) => { e.preventDefault(); e.stopPropagation(); noteOn(n.i, "ptr"); });
-    el.addEventListener("touchstart", (e) => { e.preventDefault(); e.stopPropagation(); noteOn(n.i, "ptr"); }, {passive:false});
-
-    blackWrap.appendChild(el);
-    blackElsByIndex.set(n.i, el);
-  });
-
-  // release pointer holds
-  document.addEventListener("mouseup", releaseAllPointer);
-  document.addEventListener("touchend", releaseAllPointer);
-
-  // ---- Keyboard holds (note on/off) ----
-  document.addEventListener("keydown", (e) => {
-    const k = e.key.toLowerCase();
-    if (k === "r") return;
-    if (!(k in keyMap)) return;
-    if (e.repeat) return;
-    noteOn(keyMap[k], "key");
-  });
-
-  document.addEventListener("keyup", (e) => {
-    const k = e.key.toLowerCase();
-    if (k === "r") return;
-    if (!(k in keyMap)) return;
-    noteOff(keyMap[k], "key");
-  });
-
-  // Espace => équivalent clic sur le bouton
-  document.addEventListener("keydown", (e) => {
-    if (e.code === "Space" && !e.repeat) {
-      e.preventDefault();      // évite le scroll
-      randBtn?.click();
-    }
-  });
-
-  // If window loses focus, stop everything
-  window.addEventListener("blur", () => {
-    if (randomHeldIdx !== null) {
-  noteOff(randomHeldIdx, "rand");
-  randomHeldIdx = null;
-}
-    releaseAllPointer();
-    for (const idx of [...holdCount.keys()]) {
-      // force stop remaining (keyboard) holds
-      holdCount.delete(idx);
-      stopVoice(idx);
-    }
-  });
-})();
-</script>
+  <script>
+    (() => {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AudioCtx();
+
+      function midiToFreq(m) {
+        return 440 * Math.pow(2, (m - 69) / 12);
+      }
+
+      // Plage: F2 -> F4 (inclus) : F2=41, F4=65 => 25 notes
+      const START_MIDI = 41;
+      const END_MIDI = 65;
+      const TOTAL_NOTES = END_MIDI - START_MIDI + 1;
+
+      // Notes noires dans l’octave (mod 12): C#, D#, F#, G#, A#
+      const BLACK_OFFSETS = new Set([1, 3, 6, 8, 10]);
+
+      // Mapping clavier (C3..B3 + C4)
+      // C3 = 48 => index = 48 - START_MIDI = 7
+      const keyMap = {
+        q: 7, z: 8, s: 9, e: 10, d: 11, f: 12,
+        t: 13, g: 14, y: 15, h: 16, u: 17, j: 18,
+        k: 19
+      };
+
+      // Touch UX (mobile)
+      // - on "enfonce": on démarre le son très vite (petit délai anti-scroll)
+      // - si on maintient: le son reste
+      // - si c'est un tap court: on garde un petit "tail" après relâchement
+      const PRESS_DELAY_MS = 35;   // anti-scroll (démarre quasi à l'enfoncement)
+      const TAP_MAX_MS = 160;      // en-dessous => considéré comme "tap"
+      const TAP_TAIL_MS = 180;     // durée ajoutée après relâchement d'un tap
+      const SCROLL_THRESHOLD_PX = 10;
+
+      let touchStartX = 0;
+      let touchStartY = 0;
+
+      const piano = document.getElementById("piano");
+      const whiteWrap = document.getElementById("whiteKeys");
+      const blackWrap = document.getElementById("blackKeys");
+
+      // Build notes
+      const notes = [];
+      for (let i = 0; i < TOTAL_NOTES; i++) {
+        const midi = START_MIDI + i;
+        notes.push({
+          i,
+          midi,
+          freq: midiToFreq(midi),
+          isBlack: BLACK_OFFSETS.has(midi % 12)
+        });
+      }
+
+      // UI: boutons
+      const randBtn = document.getElementById("randBtn");
+      const randOut = document.getElementById("randNote");
+      const randPlayBtn = document.getElementById("randPlayBtn");
+
+      const noteNames12 = ["Do", "Do#", "Ré", "Ré#", "Mi", "Fa", "Fa#", "Sol", "Sol#", "La", "La#", "Si"];
+
+      function drawRandomName() {
+        const name = noteNames12[Math.floor(Math.random() * 12)];
+        randOut.textContent = name;
+      }
+
+      randBtn?.addEventListener("click", drawRandomName);
+
+      // ---- Sustain note on/off (avec gestion multi-sources) ----
+      const activeVoices = new Map();   // noteIndex -> {osc, gain}
+      const holdCount = new Map();      // noteIndex -> number
+      const showVisualCount = new Map();// noteIndex -> number (sources qui veulent l'animation)
+      const pointerHeld = new Set();    // noteIndex held by mouse/touch
+
+      const ATTACK = 0.008;
+      const RELEASE = 0.08;
+      const LEVEL = 0.25;
+
+      const whiteElsByIndex = new Map();
+      const blackElsByIndex = new Map();
+
+      function setActiveClass(i, on) {
+        const el = blackElsByIndex.get(i) || whiteElsByIndex.get(i);
+        if (!el) return;
+        el.classList.toggle("active", on);
+      }
+
+      function startVoice(noteIndex) {
+        if (activeVoices.has(noteIndex)) return;
+        if (ctx.state === "suspended") ctx.resume();
+
+        const n = notes[noteIndex];
+        if (!n) return;
+
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = n.freq;
+
+        osc.connect(gain).connect(ctx.destination);
+
+        const now = ctx.currentTime;
+        gain.gain.cancelScheduledValues(now);
+        gain.gain.setValueAtTime(0.0001, now);
+        gain.gain.exponentialRampToValueAtTime(LEVEL, now + ATTACK);
+
+        osc.start(now);
+
+        activeVoices.set(noteIndex, { osc, gain });
+      }
+
+      function stopVoice(noteIndex) {
+        const v = activeVoices.get(noteIndex);
+        if (!v) return;
+
+        const now = ctx.currentTime;
+        v.gain.gain.cancelScheduledValues(now);
+        const current = Math.max(v.gain.gain.value, 0.0001);
+        v.gain.gain.setValueAtTime(current, now);
+        v.gain.gain.exponentialRampToValueAtTime(0.0001, now + RELEASE);
+
+        v.osc.stop(now + RELEASE + 0.02);
+
+        activeVoices.delete(noteIndex);
+      }
+
+      function noteOn(noteIndex, source) {
+        const c = (holdCount.get(noteIndex) || 0) + 1;
+        holdCount.set(noteIndex, c);
+
+        if (source === "ptr") pointerHeld.add(noteIndex);
+
+        // seules ces sources déclenchent l'animation
+        if (source !== "rand") {
+          const v = (showVisualCount.get(noteIndex) || 0) + 1;
+          showVisualCount.set(noteIndex, v);
+          setActiveClass(noteIndex, true);
+        }
+
+        if (c === 1) startVoice(noteIndex);
+      }
+
+      function noteOff(noteIndex, source) {
+        if (source === "ptr") pointerHeld.delete(noteIndex);
+
+        if (source !== "rand") {
+          const v = (showVisualCount.get(noteIndex) || 0) - 1;
+          if (v <= 0) {
+            showVisualCount.delete(noteIndex);
+            setActiveClass(noteIndex, false);
+          } else {
+            showVisualCount.set(noteIndex, v);
+          }
+        }
+
+        const c = (holdCount.get(noteIndex) || 0) - 1;
+        if (c <= 0) {
+          holdCount.delete(noteIndex);
+          stopVoice(noteIndex);
+        } else {
+          holdCount.set(noteIndex, c);
+        }
+      }
+
+      function releaseAllPointer() {
+        // ne relâche QUE ce qui vient de la souris/tactile (source ptr)
+        for (const idx of [...pointerHeld]) noteOff(idx, "ptr");
+        pointerHeld.clear();
+      }
+
+      // ---- Random note (r + bouton) ----
+      let randomHeldIdx = null;
+      let randomPressStartTs = 0;
+
+      function startRandomHeldNote() {
+        if (randomHeldIdx !== null) return;
+
+        const playableIdx = Object.values(keyMap);
+        const idx = playableIdx[Math.floor(Math.random() * playableIdx.length)];
+
+        randomHeldIdx = idx;
+        noteOn(idx, "rand");
+      }
+
+      function stopRandomHeldNote(withTail) {
+        if (randomHeldIdx === null) return;
+
+        const idx = randomHeldIdx;
+
+        if (withTail) {
+          setTimeout(() => {
+            // si toujours la même note en cours
+            if (randomHeldIdx === idx) {
+              noteOff(idx, "rand");
+              randomHeldIdx = null;
+            }
+          }, TAP_TAIL_MS);
+        } else {
+          noteOff(idx, "rand");
+          randomHeldIdx = null;
+        }
+      }
+
+      // clavier: touche r
+      document.addEventListener("keydown", (e) => {
+        if (e.key.toLowerCase() !== "r") return;
+        if (e.repeat) return;
+        e.preventDefault();
+
+        startRandomHeldNote();
+      });
+
+      document.addEventListener("keyup", (e) => {
+        if (e.key.toLowerCase() !== "r") return;
+        e.preventDefault();
+        stopRandomHeldNote(false);
+      });
+
+      // bouton note aléatoire: souris (tap court => tail)
+      randPlayBtn?.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        randomPressStartTs = performance.now();
+        startRandomHeldNote();
+      });
+
+      randPlayBtn?.addEventListener("mouseup", (e) => {
+        e.preventDefault();
+        const dt = performance.now() - randomPressStartTs;
+        stopRandomHeldNote(dt < TAP_MAX_MS);
+      });
+
+      randPlayBtn?.addEventListener("mouseleave", () => {
+        // si on sort en gardant cliqué, on coupe
+        stopRandomHeldNote(false);
+      });
+
+      // bouton note aléatoire: tactile (tap court => tail)
+      randPlayBtn?.addEventListener("touchstart", (e) => {
+        e.preventDefault();
+        randomPressStartTs = performance.now();
+        startRandomHeldNote();
+      }, { passive: false });
+
+      randPlayBtn?.addEventListener("touchend", (e) => {
+        e.preventDefault();
+        const dt = performance.now() - randomPressStartTs;
+        stopRandomHeldNote(dt < TAP_MAX_MS);
+      }, { passive: false });
+
+      randPlayBtn?.addEventListener("touchcancel", (e) => {
+        e.preventDefault();
+        stopRandomHeldNote(false);
+      }, { passive: false });
+
+      // ---- Build visual keys ----
+      const WHITE_W = 56;
+      const BLACK_W = 36;
+
+      // Touch handling per-key (évite de bloquer le scroll)
+      const touchState = new WeakMap(); // el -> {timer, played, startTs, isScrolling}
+
+      function attachTouchHandlers(el, noteIndex, isBlack) {
+        el.addEventListener("touchstart", (e) => {
+          touchStartX = e.touches[0].clientX;
+          touchStartY = e.touches[0].clientY;
+
+          const state = {
+            timer: null,
+            played: false,
+            startTs: performance.now(),
+            isScrolling: false
+          };
+
+          // Démarre (presque) à l'enfoncement, sauf si ça part en scroll
+          state.timer = setTimeout(() => {
+            if (!state.isScrolling) {
+              noteOn(noteIndex, "ptr");
+              state.played = true;
+            }
+          }, PRESS_DELAY_MS);
+
+          touchState.set(el, state);
+        }, { passive: true });
+
+        el.addEventListener("touchmove", (e) => {
+          const state = touchState.get(el);
+          if (!state) return;
+
+          const dx = Math.abs(e.touches[0].clientX - touchStartX);
+          const dy = Math.abs(e.touches[0].clientY - touchStartY);
+
+          if (dx > dy && dx > SCROLL_THRESHOLD_PX) {
+            state.isScrolling = true;
+
+            if (state.timer) {
+              clearTimeout(state.timer);
+              state.timer = null;
+            }
+
+            // si on avait déjà démarré une note, on coupe (c'était un scroll)
+            if (state.played) {
+              noteOff(noteIndex, "ptr");
+              state.played = false;
+            }
+          }
+        }, { passive: true });
+
+        el.addEventListener("touchend", (e) => {
+          const state = touchState.get(el);
+          if (!state) return;
+
+          if (state.timer) {
+            clearTimeout(state.timer);
+            state.timer = null;
+          }
+
+          // Si on n'a pas scrollé et que le son n'a pas encore démarré (tap ultra-rapide),
+          // on démarre maintenant + tail
+          if (!state.isScrolling && !state.played) {
+            noteOn(noteIndex, "ptr");
+            state.played = true;
+          }
+
+          if (state.played) {
+            const dt = performance.now() - state.startTs;
+
+            // Tap court => on garde un peu après relâchement
+            if (dt < TAP_MAX_MS) {
+              setTimeout(() => noteOff(noteIndex, "ptr"), TAP_TAIL_MS);
+            } else {
+              // Maintien => stop à la relâche
+              noteOff(noteIndex, "ptr");
+            }
+          }
+
+          touchState.delete(el);
+        }, { passive: true });
+
+        el.addEventListener("touchcancel", () => {
+          const state = touchState.get(el);
+          if (!state) return;
+
+          if (state.timer) {
+            clearTimeout(state.timer);
+            state.timer = null;
+          }
+          if (state.played) noteOff(noteIndex, "ptr");
+
+          touchState.delete(el);
+        }, { passive: true });
+
+        // souris: maintien classique
+        el.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          noteOn(noteIndex, "ptr");
+        });
+      }
+
+      // Build white keys
+      const whiteNotes = notes.filter(n => !n.isBlack);
+      whiteNotes.forEach((n) => {
+        const el = document.createElement("div");
+        el.className = "white";
+        el.dataset.noteIndex = n.i;
+
+        attachTouchHandlers(el, n.i, false);
+
+        whiteWrap.appendChild(el);
+        whiteElsByIndex.set(n.i, el);
+      });
+
+      piano.style.width = (whiteNotes.length * WHITE_W) + "px";
+
+      // Map midi -> white position (index in whiteNotes)
+      const whitePosByMidi = new Map();
+      whiteNotes.forEach((w, pos) => whitePosByMidi.set(w.midi, pos));
+
+      // Build black keys
+      notes.filter(n => n.isBlack).forEach((n) => {
+        const el = document.createElement("div");
+        el.className = "black";
+        el.dataset.noteIndex = n.i;
+
+        const leftWhiteMidi = n.midi - 1;
+        const leftPos = whitePosByMidi.get(leftWhiteMidi);
+        const base = (leftPos == null ? 0 : leftPos) * WHITE_W;
+        el.style.left = (base + WHITE_W - (BLACK_W / 2)) + "px";
+
+        // souris: stopPropagation pour ne pas déclencher la blanche dessous
+        el.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          noteOn(n.i, "ptr");
+        });
+
+        // tactile: handlers (scroll-friendly)
+        attachTouchHandlers(el, n.i, true);
+
+        blackWrap.appendChild(el);
+        blackElsByIndex.set(n.i, el);
+      });
+
+      // release pointer holds (souris)
+      document.addEventListener("mouseup", releaseAllPointer);
+
+      // si le navigateur annule le touch, on relâche tout ce qui vient du tactile
+      document.addEventListener("touchcancel", releaseAllPointer);
+
+      // ---- Keyboard holds (note on/off) ----
+      document.addEventListener("keydown", (e) => {
+        const k = e.key.toLowerCase();
+        if (k === "r") return;
+        if (!(k in keyMap)) return;
+        if (e.repeat) return;
+        noteOn(keyMap[k], "key");
+      });
+
+      document.addEventListener("keyup", (e) => {
+        const k = e.key.toLowerCase();
+        if (k === "r") return;
+        if (!(k in keyMap)) return;
+        noteOff(keyMap[k], "key");
+      });
+
+      // Espace => clic sur "nom aléatoire"
+      document.addEventListener("keydown", (e) => {
+        if (e.code === "Space" && !e.repeat) {
+          e.preventDefault();
+          randBtn?.click();
+        }
+      });
+
+      // If window loses focus, stop everything
+      window.addEventListener("blur", () => {
+        stopRandomHeldNote(false);
+        releaseAllPointer();
+
+        for (const idx of [...holdCount.keys()]) {
+          holdCount.delete(idx);
+          stopVoice(idx);
+        }
+      });
+    })();
+  </script>
 </body>
 </html>
